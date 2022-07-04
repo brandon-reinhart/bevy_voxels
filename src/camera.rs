@@ -1,28 +1,21 @@
-use bevy::prelude::*;
 use bevy::input::mouse::MouseMotion;
+use bevy::prelude::*;
 
-const CAMERA_SPEED:f32 = 10.0;
+const CAMERA_SPEED: f32 = 10.0;
 
 pub struct CameraPlugin;
 
 impl Plugin for CameraPlugin {
     fn build(&self, app: &mut App) {
-        app
-            .add_startup_system(setup)
-            .add_system(update)
-        ;
+        app.add_startup_system(setup).add_system(update);
     }
 }
 
-fn setup(
-    mut commands: Commands
-) {
-    commands.spawn_bundle(
-        PerspectiveCameraBundle {
-            transform: Transform::from_xyz(0., 0., -10.).looking_at(Vec3::ZERO, Vec3::Y),
-            ..default()
-        }
-    );
+fn setup(mut commands: Commands) {
+    commands.spawn_bundle(PerspectiveCameraBundle {
+        transform: Transform::from_xyz(0., 4., -12.).looking_at(Vec3::ZERO, Vec3::Y),
+        ..default()
+    });
 }
 
 fn update(
@@ -33,7 +26,7 @@ fn update(
     mut query: Query<&mut Transform, With<Camera>>,
 ) {
     if query.is_empty() {
-        return
+        return;
     }
 
     let mut camera_transform = query.single_mut();
@@ -67,6 +60,4 @@ fn update(
             camera_transform.rotation = camera_transform.rotation * pitch;
         }
     }
-
 }
-
