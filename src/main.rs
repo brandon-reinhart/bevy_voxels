@@ -9,68 +9,44 @@ use bevy::{
     render::mesh::PrimitiveTopology,
 };
 use rand::prelude::*;
+use block_mesh::ndshape::{ConstShape, ConstShape3u32};
+use block_mesh::{greedy_quads, GreedyQuadsBuffer, MergeVoxel, Voxel, VoxelVisibility, RIGHT_HANDED_Y_UP_CONFIG};
 
 mod camera;
-mod cube;
 
 static GEN_CHUNKS_STAGE: &str = "gen_chunks";
 static MESH_CHUNKS_STAGE: &str = "mesh_chunks";
 
-const CHUNK_DIM:usize = 32;
-const CHUNK_SIZE:usize = CHUNK_DIM*CHUNK_DIM*CHUNK_DIM;
+#[derive(Default, Copy, Clone, Eq, PartialEq)]
+pub struct BoolVoxel(bool);
 
-#[derive(Default, Copy, Clone)]
-pub struct Block(bool);
+const EMPTY: BoolVoxel = BoolVoxel(false);
+const FULL: BoolVoxel = BoolVoxel(true);
+
+impl Voxel for BoolVoxel {
+    fn get_visibility(&self) -> VoxelVisibility {
+        if *self == EMPTY {
+            VoxelVisibility::Empty
+        } else {
+            VoxelVisibility::Opaque
+        }
+    }
+}
+
+impl MergeVoxel for BoolVoxel {
+    type MergeValue = bool;
+
+    fn merge_value(&self) -> Self::MergeValue {
+        self.0
+    }
+}
+
+const CHUNK_DIM:u32 = 18;
+type ChunkShape = ConstShape3u32<18, 18, 18>;
 
 #[derive(Component)]
 pub struct Chunk {
-    blocks: [Block; CHUNK_SIZE],
-}
-
-impl Default for Chunk {
-    fn default() -> Self {
-        Chunk {
-            blocks: [Block(false); CHUNK_SIZE],
-        }
-    }
-}
-
-impl Chunk {
-    fn voxel_coord( &self,idx: usize ) -> Vec3 {
-        let mut i = idx;
-        let x = i%CHUNK_DIM;
-        i -= x;
-        i /= CHUNK_DIM;
-        let y = i%CHUNK_DIM;
-        i -= y;
-        i /= CHUNK_DIM;
-        let z = i%CHUNK_DIM;
-
-        Vec3::new(x as f32, y as f32, z as f32)
-    }
-
-    fn voxel_index( &self, coord: Vec3 ) -> ChunkIndex {
-        if coord.x < 0.0 || coord.y < 0.0 || coord.z < 0.0
-            || coord.x as usize >= CHUNK_DIM || coord.y as usize >= CHUNK_DIM || coord.z as usize >= CHUNK_DIM {
-            ChunkIndex::Invalid
-        } else {
-            ChunkIndex::Index( (coord.z as usize * CHUNK_DIM * CHUNK_DIM) + (coord.y as usize * CHUNK_DIM) + coord.x as usize )
-        }
-    }
-
-    fn voxel_at(&self, coord: Vec3) -> bool {
-        let index = self.voxel_index(coord);
-        match index {
-            ChunkIndex::Invalid => false,
-            ChunkIndex::Index(idx) => self.blocks[idx].0,
-        }
-    }
-}
-
-#[derive(PartialEq, Debug)]
-pub enum ChunkIndex {
-    Invalid,
-    Index(usize),
+    voxels: [BoolVoxel; ChunkShape::SIZE as usize],
 }
 
 #[derive(Component)]
@@ -82,53 +58,27 @@ fn generate_chunk(
 {
     let mut rng = thread_rng();
 
-    let mut blocks = [Block(false); CHUNK_SIZE];
-    for mut block in &mut blocks {
-        block.0 = rng.gen::<f32>() > 0.5;
+    let mut voxels = [EMPTY; ChunkShape::SIZE as usize];
+
+    for x in 1..CHUNK_DIM-1 {
+        for y in 1..CHUNK_DIM-1 {
+            for z in 1..CHUNK_DIM-1 {
+                let i = ChunkShape::linearize([x, y, z]);
+
+                if rng.gen::<f32>() > 0.5 {
+                    voxels[i as usize] = FULL;
+                }
+            }
+        }
     }
 
     commands
         .spawn()
-        .insert(Chunk{ blocks } )
+        .insert(Chunk{ voxels } )
     ;
 }
 
-fn generate_face(
-    coord: Vec3,
-    face: usize,
-    chunk_verts: &mut Vec<[f32;3]>,
-    chunk_indices: &mut Vec<u32>,
-    chunk_normals: &mut Vec<[f32;3]>,
-    chunk_uvs: &mut Vec<[f32;2]>
-) {
-    let face_verts = cube::FACES[face].vertices;
-    let mut verts = Vec::new();
-    for face_vert in face_verts.iter() {
-        let vertex = coord + Vec3::from_slice( face_vert );
-        verts.push( vertex.to_array() );
-    }
-
-    let mut indices: Vec<u32> = cube::FACES[face].indices.clone().to_vec();
-
-    indices.iter_mut().for_each(|x| *x += (chunk_verts.len()) as u32);
-    chunk_indices.append(&mut indices);
-
-    let mut normals = vec![
-        cube::FACES[face].dir;verts.len()
-    ];
-    chunk_normals.append( &mut normals );
-
-    let mut uvs = vec![
-        [0.,0.];verts.len()
-    ];
-
-    chunk_uvs.append( &mut uvs );
-
-    chunk_verts.append( &mut verts );
-}
-
-// https://0fps.net/2012/06/30/meshing-in-a-minecraft-game/
-fn mesh_chunk_cull_interior(
+fn mesh_chunk_greedy(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
@@ -140,31 +90,40 @@ fn mesh_chunk_cull_interior(
     }
 
     let chunk = query.single();
+    let faces = RIGHT_HANDED_Y_UP_CONFIG.faces;
 
-    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
+    let mut buffer = GreedyQuadsBuffer::new(chunk.voxels.len());
+    greedy_quads(
+        &chunk.voxels,
+        &ChunkShape {},
+        [0; 3],
+        [CHUNK_DIM-1; 3],
+        &faces,
+        &mut buffer
+    );
 
-    let mut chunk_verts:Vec<[f32;3]> = Vec::new();
-    let mut chunk_indices:Vec<u32> = Vec::new();
-    let mut chunk_normals:Vec<[f32;3]> = Vec::new();
-    let mut chunk_uvs:Vec<[f32;2]> = Vec::new();
+    let num_indices = buffer.quads.num_quads() * 6;
+    let num_vertices = buffer.quads.num_quads() * 4;
 
-    for i in 0..chunk.blocks.len() {
-        if chunk.blocks[i].0 {
-            let coord = chunk.voxel_coord(i);
+    let mut indices = Vec::with_capacity(num_indices);
+    let mut positions = Vec::with_capacity(num_vertices);
+    let mut normals = Vec::with_capacity(num_vertices);
+    let mut tex_coords = Vec::with_capacity(num_vertices);
 
-            for face in 0..cube::FACES.len() {
-                let neighbor = chunk.voxel_at(coord + Vec3::from_slice( &cube::FACES[face].dir.clone() ));
-                if !neighbor {
-                    generate_face( coord, face, &mut chunk_verts, &mut chunk_indices, &mut chunk_normals, &mut chunk_uvs );
-                }
-            }
+    for (group, face) in buffer.quads.groups.into_iter().zip(faces.into_iter()) {
+        for quad in group.into_iter() {
+            indices.extend_from_slice(&face.quad_mesh_indices( positions.len() as u32 ));
+            positions.extend_from_slice( &face.quad_mesh_positions( &quad, 1.0 ) );
+            normals.extend_from_slice(&face.quad_mesh_normals());
+            tex_coords.extend_from_slice(&face.tex_coords( RIGHT_HANDED_Y_UP_CONFIG.u_flip_face, false, &quad ));
         }
     }
 
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, chunk_verts);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, chunk_normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, chunk_uvs);
-    mesh.set_indices(Some(Indices::U32(chunk_indices)));
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, tex_coords);
+    mesh.set_indices(Some(Indices::U32(indices)));
 
     commands
         .spawn_bundle(PbrBundle {
@@ -174,6 +133,7 @@ fn mesh_chunk_cull_interior(
                 //alpha_mode: AlphaMode::Mask(0.5),
                 ..default()
             }),
+            transform: Transform::from_translation(Vec3::splat(-10.0)),
             ..default()
         })
         .insert(Wireframe)
@@ -198,6 +158,6 @@ fn main() {
         .add_startup_stage(GEN_CHUNKS_STAGE,SystemStage::parallel())
         .add_startup_stage(MESH_CHUNKS_STAGE, SystemStage::parallel())
         .add_startup_system_to_stage( GEN_CHUNKS_STAGE, generate_chunk)
-        .add_startup_system_to_stage( MESH_CHUNKS_STAGE, mesh_chunk_cull_interior)
+        .add_startup_system_to_stage( MESH_CHUNKS_STAGE, mesh_chunk_greedy)
         .run();
 }

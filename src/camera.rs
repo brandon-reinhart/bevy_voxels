@@ -13,7 +13,7 @@ impl Plugin for CameraPlugin {
 
 fn setup(mut commands: Commands) {
     commands.spawn_bundle(PerspectiveCameraBundle {
-        transform: Transform::from_xyz(35., 65., 65.).looking_at(Vec3::ZERO, Vec3::Y),
+        transform: Transform::from_xyz(0., 5., 5.).looking_at(Vec3::ZERO, Vec3::Y),
         ..default()
     });
 }
