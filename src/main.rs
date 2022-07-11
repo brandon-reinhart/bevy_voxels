@@ -41,8 +41,8 @@ impl MergeVoxel for BoolVoxel {
     }
 }
 
-const CHUNK_DIM:u32 = 18;
-type ChunkShape = ConstShape3u32<18, 18, 18>;
+const CHUNK_DIM:u32 = 16;
+type ChunkShape = ConstShape3u32<16, 16, 16>;
 
 #[derive(Component)]
 pub struct Chunk {
@@ -65,7 +65,7 @@ fn generate_chunk(
             for z in 1..CHUNK_DIM-1 {
                 let i = ChunkShape::linearize([x, y, z]);
 
-                if rng.gen::<f32>() > 0.5 {
+                if rng.gen::<f32>() > 0.1 {
                     voxels[i as usize] = FULL;
                 }
             }
